@@ -1,0 +1,115 @@
+%let START_DATE = '01JAN2024'd;
+%let END_DATE   = '31DEC2024'd;
+/* step 1 import crsp */
+
+proc import datafile = "crsp2024.csv"
+
+	out = crsp_raw
+	dbms =csv
+	replace;
+	guessingrows = max;
+	getnames = yes;
+run;
+
+
+data crsp;
+	set crsp_raw;
+
+	MthCalDt_num = input(strip(MthCalDt), anydtdte.);
+	format MthCalDt_num date9.;
+	drop MthCalDt;
+	rename MthCalDt_num = MthCalDt;
+
+	/* keep only jan-dec 2024 */
+	if &START_DATE <= MthCalDt <= &END_DATE;
+run;
+
+
+/* step 2 import compustat */
+
+proc import datafile = "compustat2024.csv"
+	out = compustat_raw
+	dbms = csv
+	replace;
+	guessingrows = max;
+	getnames = yes;
+run;
+
+/*filter for fiscal year 2024 only */
+
+data compustat;
+	set compustat_raw;
+
+	/* convert datadate to sas date */
+	datadate_num = input(strip(datadate), anydtdte.);
+	format datadate_num date9.;
+	drop datadate;
+	rename datadate_num = datadate;
+
+	/* keep 2024 obs only */
+	if year(datadate) = 2024;
+run;
+
+proc contents data = compustat_raw; run;
+/* import ccm link table */
+
+proc import datafile = "ccm_link.csv"
+	out = ccm_raw
+	dbms = csv
+	replace;
+	guessingrows = max;
+	getnames = yes;
+run;
+
+/* clean ccm link */
+
+data ccm;
+
+	set ccm_raw;
+	/* convert link dates to sas dates */
+	linkdt_num = input(strip(linkdt), anydtdte.);
+	linkenddt_num = input(strip(linkenddt), anydtdte.);
+	if missing(linkenddt_num) then linkenddt_num = '31DEC9999'd;
+
+	/*keep only common stock link types */
+	if linktype in ("LC", "LU", "LS");
+
+	format linkdt_num linkenddt_num date9.;
+	drop linkdt linkenddt;
+
+	rename linkdt_num = linkdt linkenddt_num = linkenddt;
+run;
+
+
+/* step 4 merge crsp with ccm (attached gvkey by link validity) */
+
+proc sql;
+	create table crsp_ccm as
+	select a.*, b.gvkey
+	from crsp as a 
+	inner join ccm as b
+		on a.permno = b.lpermno
+		and a.MthCalDt between b.linkdt and b.linkenddt;
+quit;
+
+
+/* step 5 merge crsp ccm with compustat */
+
+proc sql;
+	create table crsp_ccm_compustat_2024 as 
+	select a.*, b.*
+	from crsp_ccm as a 
+	left join compustat as b
+		on a.gvkey = b.gvkey
+		and year(a.MthCalDt) = year(b.datadate);
+quit;
+
+
+proc contents data = crsp_ccm_compustat_2024; run;
+/* step 6 export final merge */
+
+proc export data = crsp_ccm_compustat
+	outfile = "C:\File_Location"
+	dbms=csv
+	replace;
+run;
